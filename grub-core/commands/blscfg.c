@@ -56,7 +56,7 @@ static struct bls_entry *entries = NULL;
 
 #define FOR_BLS_ENTRIES(var) FOR_LIST_ELEMENTS (var, entries)
 
-static int bls_add_keyval(struct bls_entry *entry, char *key, char *val)
+static int bls_add_keyval(struct bls_entry *entry, const char *key, const char *val)
 {
   char *k, *v;
   struct keyval **kvs, *kv;
