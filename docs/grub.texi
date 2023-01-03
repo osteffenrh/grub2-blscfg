@@ -4000,6 +4000,7 @@ you forget a command, you can run the command @command{help}
 * background_image::            Load background image for active terminal
 * badram::                      Filter out bad regions of RAM
 * blocklist::                   Print a block list
+* bli::                         Set Boot Loader Interface EFI variables
 * boot::                        Start up your operating system
 * cat::                         Show the contents of a file
 * chainloader::                 Chain-load another boot loader
@@ -4186,6 +4187,27 @@ Note: The command is not allowed when lockdown is enforced (@pxref{Lockdown}).
 
 @deffn Command blocklist file
 Print a block list (@pxref{Block list syntax}) for @var{file}.
+@end deffn
+
+
+@node bli
+@subsection bli
+
+@deffn Command bli
+Initialize the @url{https://systemd.io/BOOT_LOADER_INTERFACE/, Boot Loader Interface}.
+
+This command sets two EFI variables under the vendor GUID
+@code{4a67b082-0a4c-41cf-b6c7-440b29bb8c4f}:
+
+@code{LoaderDevicePartUUID} is set to the Partition UUID of the EFI System Partition used during boot.
+This is needed for automatic partition discovery as described by the 
+@url{https://uapi-group.org/specifications/specs/discoverable_partitions_specification/,
+Discoverable Partitions Specification}.
+
+@code{LoaderInfo} is set to the string @code{Grub} followed by the version number.  This is used by
+user-space tools to identify the boot loader that was used.
+
+This command is only available on UEFI platforms.
 @end deffn
 
 

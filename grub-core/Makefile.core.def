@@ -2637,3 +2637,9 @@ module = {
   common = lib/libtasn1_wrap/tests/Test_strings.c;
   common = lib/libtasn1_wrap/wrap_tests.c;
 };
+
+module = {
+  name = bli;
+  efi = commands/bli.c;
+  enable = efi;
+};
