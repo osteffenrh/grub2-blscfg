@@ -37,6 +37,8 @@
 #include <grub/linux.h>
 #include <grub/safemath.h>
 #include <grub/efi/sb.h>
+#include <grub/gpt_partition.h>
+#include <grub/partition.h>
 
 #include <grub/efi/pe32.h>
 
@@ -120,6 +122,138 @@ grub_find_real_target (void)
   return result;
 }
 
+#define MODNAME "blscfg"
+
+static const grub_gpt_part_guid_t sd_gpt_root_x86_64_guid =
+  { 0x4f68bce3, 0xe8cd, 0x4db1,
+    {0x96, 0xe7, 0xfb, 0xca, 0xf9, 0x84, 0xb7, 0x09} };
+
+static int compare_gpt_guid (const grub_gpt_part_guid_t *a, const grub_gpt_part_guid_t *b)
+{
+  return grub_memcmp (a, b, sizeof (grub_gpt_part_guid_t));
+}
+
+static void
+print_guid (const char *text, const struct grub_gpt_part_guid *guid)
+{
+    grub_dprintf (MODNAME, "%s"
+       "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x \n",
+       text,
+       grub_le_to_cpu32 (guid->data1),
+       grub_le_to_cpu16 (guid->data2),
+       grub_le_to_cpu16 (guid->data3),
+       guid->data4[0], guid->data4[1], guid->data4[2],
+       guid->data4[3], guid->data4[4], guid->data4[5],
+       guid->data4[6], guid->data4[7]);
+}
+
+static int
+part_hook_root (struct grub_disk *disk , const grub_partition_t part,
+           void *data)
+{
+  struct grub_gpt_partentry entry;
+
+  if (!data)
+    return 2;
+
+  grub_dprintf ("blscfg",
+                "PART: index = %d number = %d offset = 0x%llx len = %lld\n",
+                part->index, part->number, part->offset, part->len);
+
+
+  if (grub_disk_read (
+        disk,
+        part->offset,
+        part->index,
+        sizeof (entry),
+        &entry))
+    {
+      grub_dprintf ("blscfg", "%s: Read error\n", disk->name);
+    }
+
+  if (compare_gpt_guid (&entry.type, &sd_gpt_root_x86_64_guid) == 0)
+  {
+    grub_dprintf ("blscfg", "-> %s,gpt%d\n", disk->name, part->number);
+
+    print_guid ("UUID=", &(entry.guid));
+
+    grub_memcpy (data, &(entry.guid), sizeof (grub_gpt_part_guid_t));
+
+    return 1;
+  }
+  return 0;
+}
+
+static grub_err_t
+find_root_part_uuid (char **uuid)
+{
+
+  const char *device_name;
+  grub_device_t dev;
+  grub_disk_t disk = NULL;
+  grub_err_t status = GRUB_ERR_OUT_OF_RANGE;
+  grub_gpt_part_guid_t guid = {};
+
+  device_name = grub_env_get ("root");
+  if (!device_name)
+    {
+      grub_dprintf (MODNAME, "root not set\n");
+      return GRUB_ERR_BAD_ARGUMENT;
+    }
+
+  grub_dprintf (MODNAME, "root = %s\n", device_name);
+
+  dev = grub_device_open (device_name);
+  if (!dev)
+    {
+      grub_dprintf (MODNAME, "Error opening device %s\n", device_name);
+      goto finish;
+    }
+
+  if (!dev->disk || !dev->disk->partition)
+    {
+      grub_dprintf (MODNAME, "Not a disk or not a partiton\n"); // TODO
+      goto finish;
+    }
+
+  disk = grub_disk_open (dev->disk->name);
+  if (!disk)
+    {
+      grub_dprintf ("blscfg", "Error opening disk\n");
+      return GRUB_ERR_BAD_ARGUMENT;
+    }
+
+  if (grub_strcmp (dev->disk->partition->partmap->name, "gpt") != 0)
+    {
+      grub_dprintf ("blscfg", "%s: Not a gpt patition table\n",
+                    dev->disk->name);
+      goto finish;
+    }
+
+  if (1 == grub_partition_iterate (disk, part_hook_root, &guid))
+  {
+     *uuid = grub_xasprintf (
+       "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+       grub_le_to_cpu32 (guid.data1),
+       grub_le_to_cpu16 (guid.data2),
+       grub_le_to_cpu16 (guid.data3),
+       guid.data4[0], guid.data4[1], guid.data4[2],
+       guid.data4[3], guid.data4[4], guid.data4[5],
+       guid.data4[6], guid.data4[7]);
+
+     status = GRUB_ERR_NONE;
+  }
+
+finish:
+
+  if (disk)
+    grub_disk_close (disk);
+
+  if (dev)
+    grub_device_close (dev);
+
+  return status;
+}
 #define PE32_HEADER_POINTER_OFFSET 0x3c
 #define OSREL_SECTION_SIZE_MAX 4096
 
@@ -451,7 +585,7 @@ prepare_linux (grub_uint8_t* kernel, grub_ssize_t len, int argc, char *argv[])
 }
 
 static grub_err_t
-chop_cmdline (char* cmdline, int *argc, char ***argv)
+chop_cmdline (char* cmdline, int *argc, char ***argv, int extra_args)
 {
   *argc = 1;
   for (const char *p = cmdline; *p != '\0'; ++p)
@@ -459,6 +593,7 @@ chop_cmdline (char* cmdline, int *argc, char ***argv)
       ++(*argc);
 
   grub_dprintf("linux", "cmdline: found %d args\n", *argc);
+  *argc += extra_args;
   *argv = grub_calloc(*argc, sizeof (char *));
   if (!(*argv))
     return grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("Out of memory"));
@@ -488,6 +623,7 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   char **cmdline_argv = NULL;
   char **local_cmdline_argv = NULL;
   char *uki_cmdline_data = NULL;
+  char *extra_root = NULL;
 
   grub_dl_ref (my_mod);
 
@@ -540,15 +676,30 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
             grub_dprintf ("linux", "read %d, expected %d\n", s, cmdline_section_header.raw_data_size);
             return grub_error (GRUB_ERR_BAD_FILE_TYPE, N_("File too short while reading section")); // TODO?
           }
-
-          status = chop_cmdline (uki_cmdline_data, &cmdline_argc, &local_cmdline_argv);
+          if (grub_strstr (uki_cmdline_data, "root=") == NULL)
+          {
+              grub_dprintf (MODNAME, "cmdline does not contain root=... scanning for partition...\n");
+              char *uuid = NULL;
+              if (find_root_part_uuid (&uuid) == GRUB_ERR_NONE)
+              {
+                grub_dprintf (MODNAME, "root uuid=%s\n", uuid);
+                extra_root = grub_xasprintf ("root=PARTUUID=%s", uuid);
+                grub_free (uuid);
+              }
+          }
+          status = chop_cmdline (uki_cmdline_data, &cmdline_argc, &local_cmdline_argv, (extra_root ? 1 : 0));
           if (status == GRUB_ERR_NONE) {
+
+            if (extra_root)
+              local_cmdline_argv[cmdline_argc-1] = extra_root;
+
             local_cmdline_argv[0] = argv[0];
 
             cmdline_argv = local_cmdline_argv;
-
             for (int j = 0; j < cmdline_argc; ++j)
+            {
               grub_dprintf ("linux", "arg[%d] = '%s'\n", j, cmdline_argv[j]);
+            }
 
           } else {
             grub_dprintf ("linux", "Error chopping up cmdline from UKI\n");
@@ -582,6 +733,7 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   grub_free (kernel);
   grub_free (local_cmdline_argv);
   grub_free (uki_cmdline_data);
+  grub_free (extra_root);
 
   return status;
 }
