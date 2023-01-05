@@ -32,6 +32,16 @@
 #include <grub/file.h>
 #include <grub/normal.h>
 #include <grub/lib/envblk.h>
+#include <grub/efi/pe32.h>
+#include <grub/gpt_partition.h>
+#include <grub/partition.h>
+#ifdef GRUB_MACHINE_EFI
+#include <grub/efi/api.h>
+#include <grub/efi/disk.h>
+#include <grub/efi/efi.h>
+#include <grub/gpt_partition.h>
+#include <grub/partition.h>
+#endif
 
 #include <stdbool.h>
 
@@ -40,11 +50,18 @@ GRUB_MOD_LICENSE ("GPLv3+");
 #include "loadenv.h"
 
 #define GRUB_BLS_CONFIG_PATH "/loader/entries/"
+#define GRUB_BLS_LINUX_PATH "/EFI/Linux"
+#define PE32_HEADER_POINTER_OFFSET 0x3c
+#define OSREL_SECTION_SIZE_MAX 4096
 #ifdef GRUB_MACHINE_EMU
 #define GRUB_BOOT_DEVICE ""
 #else
 #define GRUB_BOOT_DEVICE "($root)"
 #endif
+
+static const grub_gpt_part_guid_t sd_gpt_esp_guid =
+  { 0xc12a7328, 0xf81f, 0x11d2,
+    {0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b} };
 
 struct keyval
 {
@@ -539,6 +556,255 @@ finish:
   return 0;
 }
 
+static grub_err_t
+get_pe32_section_header (
+    grub_file_t f,
+    const char *section_name,
+    struct grub_pe32_section_table *section_data)
+{
+  grub_size_t n;
+  char mz_magic[2];
+  char pe_magic[4];
+  grub_uint32_t pe_header_offset;
+  struct grub_pe32_coff_header pe_header;
+  grub_off_t sections_offset;
+  int i;
+
+  n = grub_file_read (f, mz_magic, sizeof (mz_magic));
+  if (n != sizeof (mz_magic))
+    return grub_errno;
+
+  if (grub_memcmp (mz_magic, "MZ", 2) != 0)
+    {
+      grub_dprintf ("blscfg", "MZ header magic mismatch.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  if ((grub_ssize_t) grub_file_seek (f, PE32_HEADER_POINTER_OFFSET) == -1)
+    return GRUB_ERR_BAD_FILE_TYPE;
+
+  n = grub_file_read (f, &pe_header_offset, sizeof (pe_header_offset));
+  if (n != sizeof (pe_header_offset))
+    return grub_errno;
+
+  pe_header_offset = grub_le_to_cpu32 (pe_header_offset);
+
+  if ((grub_ssize_t) grub_file_seek (f, pe_header_offset) == -1)
+    return grub_errno;
+
+  n = grub_file_read (f, &pe_magic, sizeof (pe_magic));
+  if (n != sizeof (pe_magic))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 magic.\n");
+      return grub_errno;
+    }
+
+  if (grub_memcmp (pe_magic, "PE\0\0", 4) != 0)
+    {
+      grub_dprintf ("blscfg", "PE32 header magic invalid.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  n = grub_file_read (f, &pe_header, sizeof (pe_header));
+  if (n != sizeof (pe_header))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 header.\n");
+      return grub_errno;
+    }
+
+  pe_header.machine = grub_le_to_cpu16 (pe_header.machine);
+  pe_header.num_sections = grub_le_to_cpu16 (pe_header.num_sections);
+  pe_header.optional_header_size = grub_le_to_cpu16 (pe_header.optional_header_size);
+
+  sections_offset = pe_header_offset + sizeof (pe_magic)
+                    + sizeof (struct grub_pe32_coff_header)
+                    + pe_header.optional_header_size;
+
+  if ((grub_ssize_t) grub_file_seek (f, sections_offset) == -1)
+    return grub_errno;
+
+  for (i = 0; i < pe_header.num_sections; ++i)
+    {
+      n = grub_file_read (f, section_data, sizeof (*section_data));
+      if (n != sizeof (*section_data))
+  {
+    grub_dprintf ("blscfg", "Error reading section headers.\n");
+    return grub_errno;
+  }
+      if (grub_strncmp (section_data->name, section_name, sizeof (section_data->name)) == 0)
+      return GRUB_ERR_NONE;
+    }
+
+    return GRUB_ERR_EOF;
+}
+
+static char*
+get_value_from_osrel (const char* buffer, const char* key)
+{
+  const char *pos;
+  const char *end;
+  grub_size_t len;
+  char* value;
+
+  pos = grub_strstr (buffer, key);
+  if (!pos)
+    return NULL;
+
+  pos += grub_strlen(key);
+
+  if (*pos != '=')
+      return NULL;
+  ++pos;
+
+  if (*pos == '"')
+    {
+      ++pos;
+      end = grub_strchr (pos, '"');
+    } else
+      end = grub_strchr (pos, '\n');
+
+  if (!end)
+    end = pos + grub_strlen(pos);
+
+  len = end - pos;
+
+  value = grub_malloc (len + 1);
+  if (!value)
+    {
+      grub_error(GRUB_ERR_OUT_OF_MEMORY, N_("out of memory"));
+      return NULL;
+    }
+
+  grub_strncpy (value, pos, len);
+  value[len] = '\0';
+
+  return value;
+}
+
+static int
+add_unified_kernel_bls_entry (const char* filename UNUSED, const char* path, const char* title)
+{
+  struct bls_entry *entry;
+  int r;
+
+  entry = grub_zalloc (sizeof (*entry));
+  if (!entry)
+    return GRUB_ERR_OUT_OF_MEMORY;
+
+  // 0 means visible.
+  entry->visible = 0;
+
+  entry->filename = grub_strdup(path);
+  if (!entry->filename)
+    {
+      r = GRUB_ERR_OUT_OF_MEMORY;
+      goto cleanup;
+    }
+
+  r = bls_add_keyval (entry, "efi", path);
+  if (r)
+    goto cleanup;
+
+  r = bls_add_keyval (entry, "title", title);
+  if (r)
+    goto cleanup;
+
+  r = bls_add_entry (entry);
+  if (!r)
+    return GRUB_ERR_NONE;
+
+  cleanup:
+  grub_free(entry);
+  return r;
+}
+
+static int
+read_unified_kernel (const char *filename, const struct grub_dirhook_info *dirhook_info UNUSED,
+    void *data)
+{
+  grub_size_t n;
+  char *path = NULL;
+  grub_file_t file;
+  grub_err_t r;
+  struct read_entry_info *info = (struct read_entry_info *)data;
+  struct grub_pe32_section_table osrel_section_header;
+  char *section_data = NULL;
+  char *title = NULL;
+
+  grub_dprintf ("blscfg", "efi filename: \"%s\"\n", filename);
+
+  n = grub_strlen (filename);
+
+  if (filename[0] == '.')
+    return 0;
+
+  if (n <= sizeof (".efi"))
+    return 0;
+
+  if (grub_strcmp (filename + n - 4, ".efi") != 0)
+    return 0;
+
+  path = grub_xasprintf ("(%s)%s/%s", info->devid, info->dirname, filename);
+  if (!path)
+    return 0;
+
+  file = grub_file_open (path, GRUB_FILE_TYPE_NONE);
+  if (!file)
+    {
+      grub_dprintf ("blscfg", "Error opening file %s", filename);
+      return 0;
+    }
+
+  r = get_pe32_section_header(file, ".osrel", &osrel_section_header);
+  if (r)
+    {
+      grub_dprintf ("blscfg", "Did not find '.osrel' section in efi file\n");
+      goto finish;
+    }
+
+  if (osrel_section_header.raw_data_size > OSREL_SECTION_SIZE_MAX)
+    {
+      grub_dprintf (
+          "blscfg",
+          "'.osrel' section too large: %d",
+          osrel_section_header.raw_data_size);
+      goto finish;
+    }
+
+  section_data = grub_malloc (osrel_section_header.raw_data_size);
+  if (!section_data)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("Out of memory"));
+      goto finish;
+    }
+
+  grub_file_seek (file, osrel_section_header.raw_data_offset);
+  n = grub_file_read (file, section_data, osrel_section_header.raw_data_size);
+  if (n != osrel_section_header.raw_data_size)
+    {
+      grub_dprintf ("blscfg", "Error reading section data from file\n");
+      goto finish;
+    }
+
+  char *pretty_name = get_value_from_osrel (section_data, "PRETTY_NAME");
+  title = grub_xasprintf ("%s [%s]", pretty_name, filename);
+  if (!title)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("Out of memory"));
+      goto finish;
+   }
+
+  add_unified_kernel_bls_entry (filename, path, title);
+
+  finish:
+  grub_free (title);
+  grub_free (section_data);
+  grub_free (path);
+  grub_file_close (file);
+
+  return 0;
+}
+
 static grub_envblk_t saved_env = NULL;
 
 static int UNUSED
@@ -711,7 +977,55 @@ static char **early_initrd_list (const char *initrd)
   return list;
 }
 
-static void create_entry (struct bls_entry *entry)
+static void
+create_entry_unified_kernel (struct bls_entry *entry)
+{
+  char *cefi;
+  char *src = NULL;
+  const char *argv;
+  int index;
+  const char *id;
+  grub_err_t err;
+
+  grub_dprintf("blscfg", "%s got here\n", __func__);
+  cefi = bls_get_val (entry, "efi", NULL);
+  if (!cefi)
+    {
+      grub_dprintf ("blscfg", "Skipping file %s with no 'efi' key.\n", entry->filename);
+      return;
+    }
+
+#ifdef GRUB_MACHINE_EFI
+  src = grub_xasprintf (
+          "chainloader \"%s\"\n"
+          "boot",
+          cefi);
+#else
+  src = grub_xasprintf (
+          "linux \"%s\"\n"
+          "initrd \"%s\"\n"
+          "boot",
+          cefi,
+          cefi);
+#endif
+
+  if (!src)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("out of memory"));
+      return;
+    }
+
+  argv = bls_get_val (entry, "title", NULL);
+  id = argv;
+
+  err = grub_normal_add_menu_entry (1, &argv, NULL, id, NULL, NULL, NULL, src, 0, &index, entry);
+  if (!err)
+    grub_dprintf ("blscfg", "Added entry %d id:\"%s\"\n", index, id);
+
+  grub_free (src);
+}
+
+static void create_entry_bls_config (struct bls_entry *entry)
 {
   int argc = 0;
   const char **argv = NULL;
@@ -927,12 +1241,85 @@ finish:
   grub_free (src);
 }
 
+static void create_entry (struct bls_entry *entry)
+{
+  char *clinux;
+  char *cefi;
+
+  grub_dprintf("blscfg", "%s got here\n", __func__);
+
+  clinux = bls_get_val (entry, "linux", NULL);
+  cefi = bls_get_val (entry, "efi", NULL);
+
+  if (clinux && cefi)
+    {
+      grub_dprintf (
+          "blscfg",
+          "Error: Got both 'linux' and 'efi' fields in the same entry %s\n",
+          entry->filename);
+    }
+  else if (clinux)
+    {
+      create_entry_bls_config (entry);
+    }
+  else
+  {
+    create_entry_unified_kernel (entry);
+  }
+
+}
+
 struct find_entry_info {
 	const char *dirname;
 	const char *devid;
 	grub_device_t dev;
 	grub_fs_t fs;
 };
+
+/*
+ * info: the filesystem object the file is on.
+ */
+static int find_unified_kernels (const struct find_entry_info *info)
+{
+  struct read_entry_info read_entry_info;
+  grub_fs_t blsdir_fs = NULL;
+  grub_device_t blsdir_dev = NULL;
+  const char *blsdir = info->dirname;
+  int r = 0;
+
+  if (!blsdir)
+    {
+      blsdir = grub_env_get ("blslinuxdir");
+      if (!blsdir)
+  blsdir = GRUB_BLS_LINUX_PATH;
+    }
+
+  read_entry_info.file = NULL;
+  read_entry_info.dirname = blsdir;
+
+  grub_dprintf ("blscfg", "scanning blslinuxdir: %s\n", blsdir);
+
+  blsdir_dev = info->dev;
+  blsdir_fs = info->fs;
+  read_entry_info.devid = info->devid;
+
+  r = blsdir_fs->fs_dir (
+        blsdir_dev,
+        read_entry_info.dirname,
+        read_unified_kernel,
+        &read_entry_info);
+  if (r != 0)
+    {
+      grub_dprintf ("blscfg", "read_unified_kernel returned error\n");
+      grub_err_t e;
+      do
+  {
+    e = grub_error_pop();
+  } while (e);
+    }
+
+  return 0;
+}
 
 /*
  * info: the filesystem object the file is on.
@@ -985,81 +1372,215 @@ read_fallback:
 }
 
 static grub_err_t
-bls_load_entries (const char *path)
+scan_device (const char* devid)
 {
-  grub_size_t len;
-  grub_fs_t fs;
-  grub_device_t dev;
-  static grub_err_t r;
-  const char *devid = NULL;
-  char *blsdir = NULL;
+  grub_err_t r = GRUB_ERR_NONE;
+
   struct find_entry_info info = {
       .dev = NULL,
       .fs = NULL,
       .dirname = NULL,
   };
-  struct read_entry_info rei = {
-      .devid = NULL,
-      .dirname = NULL,
-  };
-
-  if (path) {
-    len = grub_strlen (path);
-    if (grub_strcmp (path + len - 5, ".conf") == 0) {
-      rei.file = grub_file_open (path, GRUB_FILE_TYPE_CONFIG);
-      if (!rei.file)
-	return grub_errno;
-      /*
-       * read_entry() closes the file
-       */
-      return read_entry(path, NULL, &rei);
-    } else if (path[0] == '(') {
-      devid = path + 1;
-
-      blsdir = grub_strchr (path, ')');
-      if (!blsdir)
-	return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("Filepath isn't correct"));
-
-      *blsdir = '\0';
-      blsdir = blsdir + 1;
-    }
-  }
-
-  if (!devid) {
-#ifdef GRUB_MACHINE_EMU
-    devid = "host";
-#else
-    devid = grub_env_get ("root");
-#endif
-    if (!devid)
-      return grub_error (GRUB_ERR_FILE_NOT_FOUND,
-			 N_("variable `%s' isn't set"), "root");
-  }
 
   grub_dprintf ("blscfg", "opening %s\n", devid);
-  dev = grub_device_open (devid);
-  if (!dev)
+  info.dev = grub_device_open (devid);
+  if (!info.dev)
     return grub_errno;
 
   grub_dprintf ("blscfg", "probing fs\n");
-  fs = grub_fs_probe (dev);
-  if (!fs)
+  info.fs = grub_fs_probe (info.dev);
+  if (!info.fs)
     {
       r = grub_errno;
       goto finish;
     }
 
-  info.dirname = blsdir;
   info.devid = devid;
-  info.dev = dev;
-  info.fs = fs;
-  find_entry(&info);
+  find_entry (&info);
+  find_unified_kernels (&info);
 
 finish:
+  if (info.dev)
+    grub_device_close (info.dev);
+
+  return r;
+}
+
+static int compare_gpt_guid (const grub_gpt_part_guid_t *a, const grub_gpt_part_guid_t *b)
+{
+  return grub_memcmp (a, b, sizeof (grub_gpt_part_guid_t));
+}
+
+static void
+print_guid (const char *text, const struct grub_gpt_part_guid *guid)
+{
+    grub_dprintf ("blscfg", "%s"
+       "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x \n",
+       text,
+       grub_le_to_cpu32 (guid->data1),
+       grub_le_to_cpu16 (guid->data2),
+       grub_le_to_cpu16 (guid->data3),
+       guid->data4[0], guid->data4[1], guid->data4[2],
+       guid->data4[3], guid->data4[4], guid->data4[5],
+       guid->data4[6], guid->data4[7]);
+}
+
+
+static int
+part_hook_esp (struct grub_disk *disk , const grub_partition_t part,
+           void *data)
+{
+  struct grub_gpt_partentry entry;
+
+  if (!data)
+    return 2;
+
+  grub_dprintf ("blscfg",
+                "PART: index = %d number = %d offset = 0x%llx len = %lld\n",
+                part->index, part->number, part->offset, part->len);
+
+
+  if (grub_disk_read (
+        disk,
+        part->offset,
+        part->index,
+        sizeof (entry),
+        &entry))
+    {
+      grub_dprintf ("blscfg", "%s: Read error\n", disk->name);
+    }
+
+  if (compare_gpt_guid (&entry.type, &sd_gpt_esp_guid) == 0)
+  {
+    print_guid ("Found ESP UUID = ", &entry.guid);
+    grub_dprintf ("blscfg", "-> %s,gpt%d\n", disk->name, part->number);
+
+    int *out = (int *) data;
+    *out = part->number;
+    return 1;
+  }
+  return 0;
+}
+
+#ifdef GRUB_MACHINE_EFI
+static char *
+machine_get_bootdevice (void)
+{
+  grub_efi_loaded_image_t *image;
+
+  image = grub_efi_get_loaded_image (grub_efi_image_handle);
+  if (!image)
+    return NULL;
+
+  return grub_efidisk_get_device_name (image->device_handle);
+}
+#endif
+
+static grub_err_t
+machine_get_bootlocation_bios (char **esp)
+{
+
+  const char *device_name;
+  grub_device_t dev;
+  grub_disk_t disk = NULL;
+  grub_err_t status = GRUB_ERR_OUT_OF_RANGE;
+  int part_number = -1;
+
+  device_name = grub_env_get ("root");
+  if (!device_name)
+    {
+      grub_dprintf ("blscfg", "root not set\n");
+      return GRUB_ERR_BAD_ARGUMENT;
+    }
+
+  grub_dprintf ("blscfg", "root = %s\n", device_name);
+
+  dev = grub_device_open (device_name);
+  if (!dev)
+    {
+      grub_dprintf ("blscfg", "Error opening device %s\n", device_name);
+      goto finish;
+    }
+
+  if (!dev->disk || !dev->disk->partition)
+    {
+      grub_dprintf ("blscfg", "Not a disk or not a partiton\n"); // TODO
+      goto finish;
+    }
+
+  disk = grub_disk_open (dev->disk->name);
+  if (!disk)
+    {
+      grub_dprintf ("blscfg", "Error opening disk\n");
+      return GRUB_ERR_BAD_ARGUMENT;
+    }
+
+  if (grub_strcmp (dev->disk->partition->partmap->name, "gpt") != 0)
+    {
+      grub_dprintf ("blscfg", "%s: Not a gpt patition table\n",
+                    dev->disk->name);
+      goto finish;
+    }
+
+  if (1 == grub_partition_iterate (disk, part_hook_esp, &part_number))
+  {
+     *esp = grub_xasprintf ("%s,gpt%d", disk->name, part_number + 1);
+     status = GRUB_ERR_NONE;
+  }
+
+finish:
+
+  if (disk)
+    grub_disk_close (disk);
+
   if (dev)
     grub_device_close (dev);
 
-  return r;
+  return status;
+}
+
+static grub_err_t
+bls_load_entries (void)
+{
+  const char* boot = NULL;
+  char *esp = NULL;
+
+#ifdef GRUB_MACHINE_EMU
+  boot = "host";
+#else
+  boot = grub_env_get ("root");
+#endif
+
+#ifdef GRUB_MACHINE_EFI
+  esp = machine_get_bootdevice ();
+#else
+  machine_get_bootlocation_bios (&esp);
+#endif
+
+  if (esp)
+  {
+    grub_dprintf ("blscfg", "Scanning ESP: %s\n", esp);
+    scan_device (esp);
+  } else {
+    grub_dprintf ("blscfg", "ESP not found.\n");
+  }
+
+  if (boot)
+  {
+    if (grub_strcmp (boot, esp) == 0)
+      {
+        grub_dprintf("blscfg", "$root points to ESP, skipping.\n");
+      } else {
+        grub_dprintf ("blscfg", "Scanning BOOT: %s\n", boot);
+        scan_device (boot);
+      }
+  } else {
+    grub_dprintf ("blscfg", "BOOT not found. Maybe $root not set?\n");
+  }
+
+  grub_free (esp);
+
+  return GRUB_ERR_NONE;
 }
 
 static bool
@@ -1124,7 +1645,6 @@ grub_cmd_blscfg (grub_extcmd_context_t ctxt UNUSED,
 		 int argc, char **args)
 {
   grub_err_t r;
-  char *path = NULL;
   char *entry_id = NULL;
   bool show_default = true;
   bool show_non_default = true;
@@ -1134,8 +1654,6 @@ grub_cmd_blscfg (grub_extcmd_context_t ctxt UNUSED,
       show_non_default = false;
     } else if (grub_strcmp (args[0], "non-default") == 0) {
       show_default = false;
-    } else if (args[0][0] == '(') {
-      path = args[0];
     } else {
       entry_id = args[0];
       show_default = false;
@@ -1143,7 +1661,7 @@ grub_cmd_blscfg (grub_extcmd_context_t ctxt UNUSED,
     }
   }
 
-  r = bls_load_entries(path);
+  r = bls_load_entries ();
   if (r)
     return r;
 
