@@ -39,6 +39,8 @@
 #include <grub/safemath.h>
 #include <grub/efi/sb.h>
 
+#include <grub/efi/pe32.h>
+
 GRUB_MOD_LICENSE ("GPLv3+");
 
 #ifdef GRUB_MACHINE_PCBIOS
@@ -644,6 +646,91 @@ grub_linux_unload (void)
   return GRUB_ERR_NONE;
 }
 
+#define PE32_HEADER_POINTER_OFFSET 0x3c
+#define OSREL_SECTION_SIZE_MAX 4096
+
+static grub_err_t
+get_pe32_section_header (
+    grub_file_t f,
+    const char *section_name,
+    struct grub_pe32_section_table *section_data)
+{
+  grub_size_t n;
+  char mz_magic[2];
+  char pe_magic[4];
+  grub_uint32_t pe_header_offset;
+  struct grub_pe32_coff_header pe_header;
+  grub_off_t sections_offset;
+  int i;
+
+  n = grub_file_read (f, mz_magic, sizeof (mz_magic));
+  if (n != sizeof (mz_magic))
+    return grub_errno;
+
+  if (grub_memcmp (mz_magic, "MZ", 2) != 0)
+    {
+      grub_dprintf ("blscfg", "MZ header magic mismatch.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  if ((grub_ssize_t) grub_file_seek (f, PE32_HEADER_POINTER_OFFSET) == -1)
+    return GRUB_ERR_BAD_FILE_TYPE;
+
+  n = grub_file_read (f, &pe_header_offset, sizeof (pe_header_offset));
+  if (n != sizeof (pe_header_offset))
+    return grub_errno;
+
+  pe_header_offset = grub_le_to_cpu32 (pe_header_offset);
+
+  if ((grub_ssize_t) grub_file_seek (f, pe_header_offset) == -1)
+    return grub_errno;
+
+  n = grub_file_read (f, &pe_magic, sizeof (pe_magic));
+  if (n != sizeof (pe_magic))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 magic.\n");
+      return grub_errno;
+    }
+
+  if (grub_memcmp (pe_magic, "PE\0\0", 4) != 0)
+    {
+      grub_dprintf ("blscfg", "PE32 header magic invalid.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  n = grub_file_read (f, &pe_header, sizeof (pe_header));
+  if (n != sizeof (pe_header))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 header.\n");
+      return grub_errno;
+    }
+
+  pe_header.machine = grub_le_to_cpu16 (pe_header.machine);
+  pe_header.num_sections = grub_le_to_cpu16 (pe_header.num_sections);
+  pe_header.optional_header_size = grub_le_to_cpu16 (pe_header.optional_header_size);
+
+  sections_offset = pe_header_offset + sizeof (pe_magic)
+                    + sizeof (struct grub_pe32_coff_header)
+                    + pe_header.optional_header_size;
+
+  if ((grub_ssize_t) grub_file_seek (f, sections_offset) == -1)
+    return grub_errno;
+
+  for (i = 0; i < pe_header.num_sections; ++i)
+    {
+      n = grub_file_read (f, section_data, sizeof (*section_data));
+      if (n != sizeof (*section_data))
+  {
+    grub_dprintf ("blscfg", "Error reading section headers.\n");
+    return grub_errno;
+  }
+      if (grub_strncmp (section_data->name, section_name, sizeof (section_data->name)) == 0)
+      return GRUB_ERR_NONE;
+    }
+
+    return GRUB_ERR_EOF;
+}
+
 static grub_err_t
 grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 		int argc, char *argv[])
@@ -659,6 +746,8 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   int relocatable;
   grub_uint64_t preferred_address = GRUB_LINUX_BZIMAGE_ADDR;
   grub_uint8_t *kernel = NULL;
+  grub_err_t status;
+  struct grub_pe32_section_table section_header;
 
   grub_dl_ref (my_mod);
 
@@ -672,7 +761,26 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
   if (! file)
     goto fail;
 
-  len = grub_file_size (file);
+  // check if file is PE file
+  // get list of sections
+  // see if list has .sdmagic section (as marker)
+  // get .linx section header
+  //  set len = section size
+  //  set seek to section start
+  status = get_pe32_section_header(file, ".linux", &section_header);
+  if (status != GRUB_ERR_NONE)
+    {
+      grub_dprintf("linux", "Not a UKI: %s\n", argv[0]);
+      len = grub_file_size (file);
+      grub_file_seek (file, 0);
+    }
+  else
+    { // This is a uki
+      grub_dprintf("linux", "UKI identified: %s. Loading image from .linux section.\n", argv[0]);
+      len = section_header.raw_data_size;
+      grub_file_seek (file, section_header.raw_data_offset);
+    }
+
   kernel = grub_malloc (len);
   if (!kernel)
     {

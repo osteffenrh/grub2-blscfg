@@ -38,6 +38,8 @@
 #include <grub/safemath.h>
 #include <grub/efi/sb.h>
 
+#include <grub/efi/pe32.h>
+
 GRUB_MOD_LICENSE ("GPLv3+");
 
 #define GRUB_LINUX_CL_OFFSET		0x9000
@@ -118,50 +120,102 @@ grub_find_real_target (void)
   return result;
 }
 
+#define PE32_HEADER_POINTER_OFFSET 0x3c
+#define OSREL_SECTION_SIZE_MAX 4096
+
 static grub_err_t
-grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
-		int argc, char *argv[])
+get_pe32_section_header (
+    grub_file_t f,
+    const char *section_name,
+    struct grub_pe32_section_table *section_data)
 {
-  grub_file_t file = 0;
+  grub_size_t n;
+  char mz_magic[2];
+  char pe_magic[4];
+  grub_uint32_t pe_header_offset;
+  struct grub_pe32_coff_header pe_header;
+  grub_off_t sections_offset;
+  int i;
+
+  n = grub_file_read (f, mz_magic, sizeof (mz_magic));
+  if (n != sizeof (mz_magic))
+    return grub_errno;
+
+  if (grub_memcmp (mz_magic, "MZ", 2) != 0)
+    {
+      grub_dprintf ("blscfg", "MZ header magic mismatch.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  if ((grub_ssize_t) grub_file_seek (f, PE32_HEADER_POINTER_OFFSET) == -1)
+    return GRUB_ERR_BAD_FILE_TYPE;
+
+  n = grub_file_read (f, &pe_header_offset, sizeof (pe_header_offset));
+  if (n != sizeof (pe_header_offset))
+    return grub_errno;
+
+  pe_header_offset = grub_le_to_cpu32 (pe_header_offset);
+
+  if ((grub_ssize_t) grub_file_seek (f, pe_header_offset) == -1)
+    return grub_errno;
+
+  n = grub_file_read (f, &pe_magic, sizeof (pe_magic));
+  if (n != sizeof (pe_magic))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 magic.\n");
+      return grub_errno;
+    }
+
+  if (grub_memcmp (pe_magic, "PE\0\0", 4) != 0)
+    {
+      grub_dprintf ("blscfg", "PE32 header magic invalid.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  n = grub_file_read (f, &pe_header, sizeof (pe_header));
+  if (n != sizeof (pe_header))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 header.\n");
+      return grub_errno;
+    }
+
+  pe_header.machine = grub_le_to_cpu16 (pe_header.machine);
+  pe_header.num_sections = grub_le_to_cpu16 (pe_header.num_sections);
+  pe_header.optional_header_size = grub_le_to_cpu16 (pe_header.optional_header_size);
+
+  sections_offset = pe_header_offset + sizeof (pe_magic)
+                    + sizeof (struct grub_pe32_coff_header)
+                    + pe_header.optional_header_size;
+
+  if ((grub_ssize_t) grub_file_seek (f, sections_offset) == -1)
+    return grub_errno;
+
+  for (i = 0; i < pe_header.num_sections; ++i)
+    {
+      n = grub_file_read (f, section_data, sizeof (*section_data));
+      if (n != sizeof (*section_data))
+  {
+    grub_dprintf ("blscfg", "Error reading section headers.\n");
+    return grub_errno;
+  }
+      if (grub_strncmp (section_data->name, section_name, sizeof (section_data->name)) == 0)
+      return GRUB_ERR_NONE;
+    }
+
+    return GRUB_ERR_EOF;
+}
+
+static grub_err_t
+prepare_linux (grub_uint8_t* kernel, grub_ssize_t len, int argc, char *argv[])
+{
   struct linux_i386_kernel_header lh;
   grub_uint8_t setup_sects;
   grub_size_t real_size, kernel_offset = 0;
-  grub_ssize_t len;
   int i;
   char *grub_linux_prot_chunk;
   int grub_linux_is_bzimage;
   grub_addr_t grub_linux_prot_target;
   grub_err_t err;
-  grub_uint8_t *kernel = NULL;
-
-  grub_dl_ref (my_mod);
-
-  if (argc == 0)
-    {
-      grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
-      goto fail;
-    }
-
-  file = grub_file_open (argv[0], GRUB_FILE_TYPE_LINUX_KERNEL);
-  if (! file)
-    goto fail;
-
-  len = grub_file_size (file);
-  kernel = grub_malloc (len);
-  if (!kernel)
-    {
-      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("cannot allocate kernel buffer"));
-      goto fail;
-    }
-
-  if (grub_file_read (file, kernel, len) != len)
-    {
-      if (!grub_errno)
-	grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
-		    argv[0]);
-      goto fail;
-    }
-
   grub_memcpy (&lh, kernel, sizeof (lh));
   kernel_offset = sizeof (lh);
 
@@ -232,7 +286,7 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
     setup_sects = GRUB_LINUX_DEFAULT_SETUP_SECTS;
 
   real_size = setup_sects << GRUB_DISK_SECTOR_BITS;
-  if (grub_sub (grub_file_size (file), real_size, &grub_linux16_prot_size) ||
+  if (grub_sub (len, real_size, &grub_linux16_prot_size) ||
       grub_sub (grub_linux16_prot_size, GRUB_DISK_SECTOR_SIZE, &grub_linux16_prot_size))
     {
       grub_error (GRUB_ERR_OUT_OF_RANGE, N_("overflow is detected"));
@@ -384,20 +438,154 @@ grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
 
  fail:
 
-  grub_free (kernel);
-
-  if (file)
-    grub_file_close (file);
+  // grub_free (kernel); // up
 
   if (grub_errno != GRUB_ERR_NONE)
     {
       grub_dl_unref (my_mod);
-      loaded = 0;
+      loaded = 0; // up
       grub_relocator_unload (relocator);
     }
 
   return grub_errno;
 }
+
+static grub_err_t
+chop_cmdline (char* cmdline, int *argc, char ***argv)
+{
+  *argc = 1;
+  for (const char *p = cmdline; *p != '\0'; ++p)
+    if (*p == ' ')
+      ++(*argc);
+
+  grub_dprintf("linux", "cmdline: found %d args\n", *argc);
+  *argv = grub_calloc(*argc, sizeof (char *));
+  if (!(*argv))
+    return grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("Out of memory"));
+
+  char **c = (*argv) + 1;
+  for (char *p = cmdline; *p != '\0'; ++p)
+    if (*p == ' ') {
+      *p = '\0';
+      *(c++) = (p+1);
+    }
+
+  return GRUB_ERR_NONE;
+}
+
+
+static grub_err_t
+grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
+		int argc, char *argv[])
+{
+  grub_file_t file = 0;
+  grub_ssize_t len;
+  grub_uint8_t *kernel = NULL;
+  grub_err_t status;
+  struct grub_pe32_section_table section_header;
+  struct grub_pe32_section_table cmdline_section_header;
+  int cmdline_argc = 0;
+  char **cmdline_argv = NULL;
+  char **local_cmdline_argv = NULL;
+  char *uki_cmdline_data = NULL;
+
+  grub_dl_ref (my_mod);
+
+  if (argc == 0)
+    {
+      grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
+      return grub_errno;
+    }
+
+  file = grub_file_open (argv[0], GRUB_FILE_TYPE_LINUX_KERNEL);
+  if (! file)
+    return grub_errno;
+
+  status = get_pe32_section_header(file, ".linux", &section_header);
+  if (status != GRUB_ERR_NONE)
+    {
+      grub_dprintf("linux", "Not a UKI: %s\n", argv[0]);
+      len = grub_file_size (file);
+      grub_file_seek (file, 0);
+      cmdline_argc = argc;
+      cmdline_argv = argv;
+    }
+  else
+    { // This is a uki
+      grub_dprintf("linux", "UKI identified: %s. Loading image from .linux section.\n", argv[0]);
+
+      grub_file_seek (file, 0);
+
+      status = get_pe32_section_header (file, ".cmdline", &cmdline_section_header);
+      if (status != GRUB_ERR_NONE)
+        {
+          grub_dprintf ("linux", "No command line section present in UKI\n");
+          cmdline_argc = argc;
+          cmdline_argv = argv;
+        } else {
+          grub_dprintf ("linux", ".cmdline off=0x%x, size=0x%x\n", cmdline_section_header.raw_data_offset, cmdline_section_header.raw_data_size);
+
+          grub_file_seek (file, cmdline_section_header.raw_data_offset);
+         // if (status != GRUB_ERR_NONE)
+          //  return grub_error (GRUB_ERR_BAD_FILE_TYPE, N_("SEEK failed")); // TODO?
+
+          uki_cmdline_data = grub_calloc (cmdline_section_header.raw_data_size, sizeof (char));
+          if (!uki_cmdline_data)
+            return grub_errno;
+
+          grub_ssize_t s;
+          s = grub_file_read (file, uki_cmdline_data, cmdline_section_header.raw_data_size);
+          if (s != (grub_ssize_t) cmdline_section_header.raw_data_size)
+          {
+            grub_dprintf ("linux", "read %d, expected %d\n", s, cmdline_section_header.raw_data_size);
+            return grub_error (GRUB_ERR_BAD_FILE_TYPE, N_("File too short while reading section")); // TODO?
+          }
+
+          status = chop_cmdline (uki_cmdline_data, &cmdline_argc, &local_cmdline_argv);
+          if (status == GRUB_ERR_NONE) {
+            local_cmdline_argv[0] = argv[0];
+
+            cmdline_argv = local_cmdline_argv;
+
+            for (int j = 0; j < cmdline_argc; ++j)
+              grub_dprintf ("linux", "arg[%d] = '%s'\n", j, cmdline_argv[j]);
+
+          } else {
+            grub_dprintf ("linux", "Error chopping up cmdline from UKI\n");
+            return GRUB_ERR_FILE_READ_ERROR;
+          }
+        }
+
+      len = section_header.raw_data_size;
+      grub_file_seek (file, section_header.raw_data_offset);
+    }
+
+  kernel = grub_malloc (len);
+  if (!kernel)
+    {
+      grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("cannot allocate kernel buffer"));
+      goto fail;
+    }
+
+  if (grub_file_read (file, kernel, len) != len)
+    {
+      if (!grub_errno)
+	grub_error (GRUB_ERR_BAD_OS, N_("premature end of file %s"),
+		    argv[0]);
+      goto fail;
+    }
+
+  status = prepare_linux (kernel, len, cmdline_argc, cmdline_argv);
+
+  fail:
+  grub_file_close (file);
+  grub_free (kernel);
+  grub_free (local_cmdline_argv);
+  grub_free (uki_cmdline_data);
+
+  return status;
+}
+
 
 static grub_err_t
 grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
