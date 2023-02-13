@@ -6,6 +6,8 @@
 #include <grub/mm.h>
 #include <grub/safemath.h>
 
+#include <grub/efi/pe32.h>
+
 struct newc_head
 {
   char magic[6];
@@ -149,6 +151,91 @@ insert_dir (const char *name, struct dir **root,
   return GRUB_ERR_NONE;
 }
 
+#define PE32_HEADER_POINTER_OFFSET 0x3c
+#define OSREL_SECTION_SIZE_MAX 4096
+
+static grub_err_t
+get_pe32_section_header (
+    grub_file_t f,
+    const char *section_name,
+    struct grub_pe32_section_table *section_data)
+{
+  grub_size_t n;
+  char mz_magic[2];
+  char pe_magic[4];
+  grub_uint32_t pe_header_offset;
+  struct grub_pe32_coff_header pe_header;
+  grub_off_t sections_offset;
+  int i;
+
+  n = grub_file_read (f, mz_magic, sizeof (mz_magic));
+  if (n != sizeof (mz_magic))
+    return grub_errno;
+
+  if (grub_memcmp (mz_magic, "MZ", 2) != 0)
+    {
+      grub_dprintf ("blscfg", "MZ header magic mismatch.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  if ((grub_ssize_t) grub_file_seek (f, PE32_HEADER_POINTER_OFFSET) == -1)
+    return GRUB_ERR_BAD_FILE_TYPE;
+
+  n = grub_file_read (f, &pe_header_offset, sizeof (pe_header_offset));
+  if (n != sizeof (pe_header_offset))
+    return grub_errno;
+
+  pe_header_offset = grub_le_to_cpu32 (pe_header_offset);
+
+  if ((grub_ssize_t) grub_file_seek (f, pe_header_offset) == -1)
+    return grub_errno;
+
+  n = grub_file_read (f, &pe_magic, sizeof (pe_magic));
+  if (n != sizeof (pe_magic))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 magic.\n");
+      return grub_errno;
+    }
+
+  if (grub_memcmp (pe_magic, "PE\0\0", 4) != 0)
+    {
+      grub_dprintf ("blscfg", "PE32 header magic invalid.\n");
+      return GRUB_ERR_BAD_FILE_TYPE;
+    }
+
+  n = grub_file_read (f, &pe_header, sizeof (pe_header));
+  if (n != sizeof (pe_header))
+    {
+      grub_dprintf ("blscfg", "Error reading PE32 header.\n");
+      return grub_errno;
+    }
+
+  pe_header.machine = grub_le_to_cpu16 (pe_header.machine);
+  pe_header.num_sections = grub_le_to_cpu16 (pe_header.num_sections);
+  pe_header.optional_header_size = grub_le_to_cpu16 (pe_header.optional_header_size);
+
+  sections_offset = pe_header_offset + sizeof (pe_magic)
+                    + sizeof (struct grub_pe32_coff_header)
+                    + pe_header.optional_header_size;
+
+  if ((grub_ssize_t) grub_file_seek (f, sections_offset) == -1)
+    return grub_errno;
+
+  for (i = 0; i < pe_header.num_sections; ++i)
+    {
+      n = grub_file_read (f, section_data, sizeof (*section_data));
+      if (n != sizeof (*section_data))
+  {
+    grub_dprintf ("blscfg", "Error reading section headers.\n");
+    return grub_errno;
+  }
+      if (grub_strncmp (section_data->name, section_name, sizeof (section_data->name)) == 0)
+      return GRUB_ERR_NONE;
+    }
+
+    return GRUB_ERR_EOF;
+}
+
 grub_err_t
 grub_initrd_init (int argc, char *argv[],
 		  struct grub_linux_initrd_context *initrd_ctx)
@@ -156,6 +243,7 @@ grub_initrd_init (int argc, char *argv[],
   int i;
   int newc = 0;
   struct dir *root = 0;
+  struct grub_pe32_section_table section_header;
 
   initrd_ctx->nfiles = 0;
   initrd_ctx->components = 0;
@@ -221,8 +309,23 @@ grub_initrd_init (int argc, char *argv[],
 	  return grub_errno;
 	}
       initrd_ctx->nfiles++;
-      initrd_ctx->components[i].size
-	= grub_file_size (initrd_ctx->components[i].file);
+
+      // check if this is a UKI
+      if (get_pe32_section_header (initrd_ctx->components[i].file, ".initrd", &section_header)
+          == GRUB_ERR_NONE)
+        {
+          grub_dprintf ("linux", "initrd: %s is a UKI\n", fname);
+          initrd_ctx->components[i].size = section_header.raw_data_size;
+          grub_file_seek (initrd_ctx->components[i].file, section_header.raw_data_offset);
+        }
+      else
+        {
+          grub_dprintf ("linux", "initrd: %s is a regular initrd\n", fname);
+          initrd_ctx->components[i].size
+            = grub_file_size (initrd_ctx->components[i].file);
+          grub_file_seek (initrd_ctx->components[i].file, 0);
+        }
+
       if (grub_add (initrd_ctx->size, initrd_ctx->components[i].size,
 		    &initrd_ctx->size))
 	goto overflow;
