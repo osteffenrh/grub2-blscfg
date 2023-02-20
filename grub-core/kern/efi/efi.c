@@ -25,6 +25,7 @@
 #include <grub/efi/pe32.h>
 #include <grub/time.h>
 #include <grub/term.h>
+#include <grub/types.h>
 #include <grub/kernel.h>
 #include <grub/mm.h>
 #include <grub/loader.h>
@@ -210,6 +211,11 @@ grub_efi_set_variable_with_attributes (const char *var, const grub_efi_guid_t *g
   grub_size_t len, len16;
 
   len = grub_strlen (var);
+
+  /* Check for integer overflow */
+  if (len > GRUB_SIZE_MAX / GRUB_MAX_UTF16_PER_UTF8 - 1)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("variable name too long"));
+
   len16 = len * GRUB_MAX_UTF16_PER_UTF8;
   var16 = grub_calloc (len16 + 1, sizeof (var16[0]));
   if (!var16)
