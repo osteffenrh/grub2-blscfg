@@ -124,14 +124,7 @@ grub_cmd_probe (grub_extcmd_context_t ctxt, int argc, char **args)
 	      if (grub_disk_read(disk, p->offset, p->index, sizeof(entry), &entry))
 		return grub_errno;
 	      guid = &entry.guid;
-	      grub_snprintf (val, sizeof(val),
-			     "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-			     grub_le_to_cpu32 (guid->data1),
-			     grub_le_to_cpu16 (guid->data2),
-			     grub_le_to_cpu16 (guid->data3),
-			     guid->data4[0], guid->data4[1], guid->data4[2],
-			     guid->data4[3], guid->data4[4], guid->data4[5],
-			     guid->data4[6], guid->data4[7]);
+	      grub_snprintf (val, sizeof(val), "%pG", guid);
 	    }
 	  else if (grub_strcmp(dev->disk->partition->partmap->name, "msdos") == 0)
 	    {
