@@ -221,7 +221,6 @@ grub_efi_set_variable_with_attributes (const char *var, const grub_guid_t *guid,
   if (!var16)
     return grub_errno;
   len16 = grub_utf8_to_utf16 (var16, len16, (grub_uint8_t *) var, len, NULL);
-  var16[len16] = 0;
 
   r = grub_efi_system_table->runtime_services;
 
@@ -267,7 +266,6 @@ grub_efi_get_variable_with_attributes (const char *var,
   if (!var16)
     return GRUB_EFI_OUT_OF_RESOURCES;
   len16 = grub_utf8_to_utf16 (var16, len16, (grub_uint8_t *) var, len, NULL);
-  var16[len16] = 0;
 
   r = grub_efi_system_table->runtime_services;
 
