@@ -288,6 +288,9 @@ grub_latin1_to_utf8 (grub_uint8_t *dest, const grub_uint8_t *src,
   return dest;
 }
 
+grub_ssize_t
+grub_utf8_to_utf16_alloc (const char *str8, grub_uint16_t **utf16_msg, grub_uint16_t **last_position);
+
 /* Convert UCS-4 to UTF-8.  */
 char *grub_ucs4_to_utf8_alloc (const grub_uint32_t *src, grub_size_t size);
 
