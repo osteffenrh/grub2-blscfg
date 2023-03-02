@@ -36,6 +36,37 @@ GRUB_MOD_LICENSE ("GPLv3+");
 
 static const grub_guid_t bli_vendor_guid = GRUB_EFI_VENDOR_BOOT_LOADER_INTERFACE_GUID;
 
+/* To be moved to a central place */
+static grub_ssize_t
+grub_utf8_to_utf16_alloc (const char *str8, grub_uint16_t **utf16_msg, grub_uint16_t **last_position)
+{
+  grub_size_t len;
+  grub_size_t len16;
+
+  len = grub_strlen (str8);
+
+  /* Check for integer overflow */
+  if (len > GRUB_SSIZE_MAX / GRUB_MAX_UTF16_PER_UTF8 - 1)
+    {
+      grub_error (GRUB_ERR_BAD_ARGUMENT, N_("string too large"));
+      *utf16_msg = NULL;
+      return -1;
+    }
+
+  len16 = len * GRUB_MAX_UTF16_PER_UTF8;
+
+  *utf16_msg = grub_calloc (len16 + 1, sizeof (*utf16_msg[0]));
+  if (*utf16_msg == NULL)
+    return -1;
+
+  len16 = grub_utf8_to_utf16 (*utf16_msg, len16, (grub_uint8_t *) str8, len, NULL);
+
+  if (last_position)
+    *last_position = *utf16_msg + len16;
+
+  return len16;
+}
+
 static grub_err_t
 get_part_uuid (grub_device_t dev, char **part_uuid)
 {
@@ -91,27 +122,19 @@ get_part_uuid (grub_device_t dev, char **part_uuid)
   return status;
 }
 
+
 static grub_err_t
 set_efi_str_variable (const char *name, const grub_guid_t *guid,
                       const char *value)
 {
-  grub_size_t len, len16;
   grub_efi_char16_t *value_16;
+  grub_ssize_t len16;
   grub_err_t status;
 
-  len = grub_strlen (value);
+  len16 = grub_utf8_to_utf16_alloc (value, &value_16, NULL);
 
-  /* Check for integer overflow */
-  if (len > GRUB_SIZE_MAX / GRUB_MAX_UTF16_PER_UTF8 - 1)
-    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("data too large"));
-
-  len16 = len * GRUB_MAX_UTF16_PER_UTF8;
-
-  value_16 = grub_calloc (len16 + 1, sizeof (value_16[0]));
-  if (value_16 == NULL)
+  if (len16 < 0)
     return grub_errno;
-
-  len16 = grub_utf8_to_utf16 (value_16, len16, (grub_uint8_t *) value, len, NULL);
 
   status = grub_efi_set_variable_with_attributes (name, guid,
 			(void *) value_16, (len16 + 1) * sizeof (value_16[0]),
