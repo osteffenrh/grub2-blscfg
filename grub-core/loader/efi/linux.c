@@ -103,7 +103,7 @@ grub_err_t
 grub_efi_check_nx_required (int *nx_required)
 {
   grub_efi_status_t status;
-  grub_efi_guid_t guid = GRUB_EFI_SHIM_LOCK_GUID;
+  grub_guid_t guid = GRUB_EFI_SHIM_LOCK_GUID;
   grub_size_t mok_policy_sz = 0;
   char *mok_policy = NULL;
   grub_uint32_t mok_policy_attrs = 0;

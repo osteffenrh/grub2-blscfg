@@ -17,15 +17,15 @@ GRUB_MOD_LICENSE ("GPLv3+");
 
 #define GRUB_EFI_IP6_PREFIX_LENGTH 64
 
-static grub_efi_guid_t ip4_config_guid = GRUB_EFI_IP4_CONFIG2_PROTOCOL_GUID;
-static grub_efi_guid_t ip6_config_guid = GRUB_EFI_IP6_CONFIG_PROTOCOL_GUID;
-static grub_efi_guid_t http_service_binding_guid = GRUB_EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID;
-static grub_efi_guid_t http_guid = GRUB_EFI_HTTP_PROTOCOL_GUID;
-static grub_efi_guid_t pxe_io_guid = GRUB_EFI_PXE_GUID;
-static grub_efi_guid_t dhcp4_service_binding_guid = GRUB_EFI_DHCP4_SERVICE_BINDING_PROTOCOL_GUID;
-static grub_efi_guid_t dhcp4_guid = GRUB_EFI_DHCP4_PROTOCOL_GUID;
-static grub_efi_guid_t dhcp6_service_binding_guid = GRUB_EFI_DHCP6_SERVICE_BINDING_PROTOCOL_GUID;
-static grub_efi_guid_t dhcp6_guid = GRUB_EFI_DHCP6_PROTOCOL_GUID;
+static grub_guid_t ip4_config_guid = GRUB_EFI_IP4_CONFIG2_PROTOCOL_GUID;
+static grub_guid_t ip6_config_guid = GRUB_EFI_IP6_CONFIG_PROTOCOL_GUID;
+static grub_guid_t http_service_binding_guid = GRUB_EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID;
+static grub_guid_t http_guid = GRUB_EFI_HTTP_PROTOCOL_GUID;
+static grub_guid_t pxe_io_guid = GRUB_EFI_PXE_GUID;
+static grub_guid_t dhcp4_service_binding_guid = GRUB_EFI_DHCP4_SERVICE_BINDING_PROTOCOL_GUID;
+static grub_guid_t dhcp4_guid = GRUB_EFI_DHCP4_PROTOCOL_GUID;
+static grub_guid_t dhcp6_service_binding_guid = GRUB_EFI_DHCP6_SERVICE_BINDING_PROTOCOL_GUID;
+static grub_guid_t dhcp6_guid = GRUB_EFI_DHCP6_PROTOCOL_GUID;
 
 struct grub_efi_net_device *net_devices;
 
@@ -40,7 +40,7 @@ static grub_efi_net_interface_t *net_default_interface;
 #define efi_net_interface(m,...) efi_net_interface_ ## m (net_interface, ## __VA_ARGS__)
 
 static grub_efi_handle_t
-grub_efi_locate_device_path (grub_efi_guid_t *protocol, grub_efi_device_path_t *device_path,
+grub_efi_locate_device_path (grub_guid_t *protocol, grub_efi_device_path_t *device_path,
                             grub_efi_device_path_t **r_device_path)
 {
   grub_efi_handle_t handle;
@@ -690,7 +690,7 @@ grub_efi_netfs_close (grub_file_t file)
 }
 
 static grub_efi_handle_t
-grub_efi_service_binding (grub_efi_handle_t dev, grub_efi_guid_t *service_binding_guid)
+grub_efi_service_binding (grub_efi_handle_t dev, grub_guid_t *service_binding_guid)
 {
   grub_efi_service_binding_t *service;
   grub_efi_status_t status;

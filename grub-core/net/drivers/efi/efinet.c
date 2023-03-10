@@ -336,7 +336,7 @@ grub_efinet_findcards (void)
 }
 
 static grub_efi_handle_t
-grub_efi_locate_device_path (grub_efi_guid_t *protocol, grub_efi_device_path_t *device_path,
+grub_efi_locate_device_path (grub_guid_t *protocol, grub_efi_device_path_t *device_path,
 			    grub_efi_device_path_t **r_device_path)
 {
   grub_efi_handle_t handle;

@@ -854,7 +854,7 @@ grub_get_mem_attrs (grub_addr_t addr, grub_size_t size, grub_uint64_t *attrs)
 {
   grub_efi_memory_attribute_protocol_t *proto;
   grub_efi_physical_address_t physaddr = addr;
-  grub_efi_guid_t protocol_guid = GRUB_EFI_MEMORY_ATTRIBUTE_PROTOCOL_GUID;
+  grub_guid_t protocol_guid = GRUB_EFI_MEMORY_ATTRIBUTE_PROTOCOL_GUID;
   grub_efi_status_t efi_status;
 
   proto = grub_efi_locate_protocol (&protocol_guid, 0);
@@ -881,7 +881,7 @@ grub_update_mem_attrs (grub_addr_t addr, grub_size_t size,
 {
   grub_efi_memory_attribute_protocol_t *proto;
   grub_efi_physical_address_t physaddr = addr;
-  grub_efi_guid_t protocol_guid = GRUB_EFI_MEMORY_ATTRIBUTE_PROTOCOL_GUID;
+  grub_guid_t protocol_guid = GRUB_EFI_MEMORY_ATTRIBUTE_PROTOCOL_GUID;
   grub_efi_status_t efi_status = GRUB_EFI_SUCCESS;
   grub_uint64_t before = 0, after = 0, uefi_set_attrs, uefi_clear_attrs;
   grub_err_t err;

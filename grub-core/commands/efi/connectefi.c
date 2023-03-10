@@ -78,7 +78,7 @@ typedef enum searched_item_flag
 
 typedef struct searched_item
 {
-  grub_efi_guid_t guid;
+  grub_guid_t guid;
   const char *name;
   searched_item_flags flags;
 } searched_items;

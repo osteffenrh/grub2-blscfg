@@ -97,7 +97,7 @@ set_var (const char *name, const char *value,
 static void
 grub_efi_env_init (void)
 {
-  grub_efi_guid_t efi_grub_guid = GRUB_EFI_GRUB_VARIABLE_GUID;
+  grub_guid_t efi_grub_guid = GRUB_EFI_GRUB_VARIABLE_GUID;
   struct grub_envblk envblk_s = { NULL, 0 };
   grub_envblk_t envblk = &envblk_s;
 

@@ -29,7 +29,7 @@
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
-static const grub_efi_guid_t grub_env_guid = GRUB_EFI_GRUB_VARIABLE_GUID;
+static const grub_guid_t grub_env_guid = GRUB_EFI_GRUB_VARIABLE_GUID;
 
 static grub_err_t
 grub_efi_export_env(grub_command_t cmd __attribute__ ((unused)),

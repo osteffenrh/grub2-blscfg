@@ -281,7 +281,7 @@ static grub_efi_boolean_t
 read_header (void *data, grub_efi_uint32_t size,
 	     pe_coff_loader_image_context_t *context)
 {
-  grub_efi_guid_t guid = SHIM_LOCK_GUID;
+  grub_guid_t guid = SHIM_LOCK_GUID;
   grub_efi_shim_lock_t *shim_lock;
   grub_efi_status_t status;
 
