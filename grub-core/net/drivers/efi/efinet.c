@@ -32,10 +32,10 @@
 GRUB_MOD_LICENSE ("GPLv3+");
 
 /* GUID.  */
-static grub_efi_guid_t net_io_guid = GRUB_EFI_SIMPLE_NETWORK_GUID;
-static grub_efi_guid_t pxe_io_guid = GRUB_EFI_PXE_GUID;
-static grub_efi_guid_t ip4_config_guid = GRUB_EFI_IP4_CONFIG2_PROTOCOL_GUID;
-static grub_efi_guid_t ip6_config_guid = GRUB_EFI_IP6_CONFIG_PROTOCOL_GUID;
+static grub_guid_t net_io_guid = GRUB_EFI_SIMPLE_NETWORK_GUID;
+static grub_guid_t pxe_io_guid = GRUB_EFI_PXE_GUID;
+static grub_guid_t ip4_config_guid = GRUB_EFI_IP4_CONFIG2_PROTOCOL_GUID;
+static grub_guid_t ip6_config_guid = GRUB_EFI_IP6_CONFIG_PROTOCOL_GUID;
 
 static grub_err_t
 send_card_buffer (struct grub_net_card *dev,

@@ -34,7 +34,7 @@
 
 #ifdef GRUB_STACK_PROTECTOR
 
-static grub_efi_guid_t rng_protocol_guid = GRUB_EFI_RNG_PROTOCOL_GUID;
+static grub_guid_t rng_protocol_guid = GRUB_EFI_RNG_PROTOCOL_GUID;
 
 /*
  * Don't put this on grub_efi_init()'s local stack to avoid it

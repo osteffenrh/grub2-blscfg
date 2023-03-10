@@ -36,12 +36,12 @@ grub_efi_handle_t grub_efi_image_handle;
 /* The pointer to a system table. Filled in by the startup code.  */
 grub_efi_system_table_t *grub_efi_system_table;
 
-static grub_efi_guid_t console_control_guid = GRUB_EFI_CONSOLE_CONTROL_GUID;
-static grub_efi_guid_t loaded_image_guid = GRUB_EFI_LOADED_IMAGE_GUID;
-static grub_efi_guid_t device_path_guid = GRUB_EFI_DEVICE_PATH_GUID;
+static grub_guid_t console_control_guid = GRUB_EFI_CONSOLE_CONTROL_GUID;
+static grub_guid_t loaded_image_guid = GRUB_EFI_LOADED_IMAGE_GUID;
+static grub_guid_t device_path_guid = GRUB_EFI_DEVICE_PATH_GUID;
 
 void *
-grub_efi_locate_protocol (grub_efi_guid_t *protocol, void *registration)
+grub_efi_locate_protocol (grub_guid_t *protocol, void *registration)
 {
   void *interface;
   grub_efi_status_t status;
@@ -59,7 +59,7 @@ grub_efi_locate_protocol (grub_efi_guid_t *protocol, void *registration)
    from the heap.  */
 grub_efi_handle_t *
 grub_efi_locate_handle (grub_efi_locate_search_type_t search_type,
-			grub_efi_guid_t *protocol,
+			grub_guid_t *protocol,
 			void *search_key,
 			grub_efi_uintn_t *num_handles)
 {
@@ -111,7 +111,7 @@ grub_efi_connect_controller (grub_efi_handle_t controller_handle,
 
 void *
 grub_efi_open_protocol (grub_efi_handle_t handle,
-			grub_efi_guid_t *protocol,
+			grub_guid_t *protocol,
 			grub_efi_uint32_t attributes)
 {
   grub_efi_boot_services_t *b;
@@ -212,7 +212,7 @@ grub_efi_set_virtual_address_map (grub_efi_uintn_t memory_map_size,
 }
 
 grub_err_t
-grub_efi_set_variable_with_attributes (const char *var, const grub_efi_guid_t *guid,
+grub_efi_set_variable_with_attributes (const char *var, const grub_guid_t *guid,
 		      void *data, grub_size_t datasize, grub_efi_uint32_t attributes)
 {
   grub_efi_status_t status;
@@ -248,7 +248,7 @@ grub_efi_set_variable_with_attributes (const char *var, const grub_efi_guid_t *g
 }
 
 grub_err_t
-grub_efi_set_variable (const char *var, const grub_efi_guid_t *guid,
+grub_efi_set_variable (const char *var, const grub_guid_t *guid,
 		      void *data, grub_size_t datasize)
 {
   return grub_efi_set_variable_with_attributes (var, guid, data, datasize, 
@@ -259,7 +259,7 @@ grub_efi_set_variable (const char *var, const grub_efi_guid_t *guid,
 
 grub_efi_status_t
 grub_efi_get_variable_with_attributes (const char *var,
-				       const grub_efi_guid_t *guid,
+				       const grub_guid_t *guid,
 				       grub_size_t *datasize_out,
 				       void **data_out,
 				       grub_efi_uint32_t *attributes)
@@ -314,7 +314,7 @@ grub_efi_get_variable_with_attributes (const char *var,
 }
 
 grub_efi_status_t
-grub_efi_get_variable (const char *var, const grub_efi_guid_t *guid,
+grub_efi_get_variable (const char *var, const grub_guid_t *guid,
 		       grub_size_t *datasize_out, void **data_out)
 {
   return grub_efi_get_variable_with_attributes (var, guid, datasize_out, data_out, NULL);
