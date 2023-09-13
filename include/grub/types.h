@@ -376,7 +376,7 @@ struct grub_guid
   grub_uint16_t data2;
   grub_uint16_t data3;
   grub_uint8_t data4[8];
-} __attribute__ ((aligned(8)));
+} __attribute__ ((aligned(4)));
 typedef struct grub_guid grub_guid_t;
 
 struct grub_packed_guid
@@ -385,7 +385,7 @@ struct grub_packed_guid
   grub_uint16_t data2;
   grub_uint16_t data3;
   grub_uint8_t data4[8];
-} __attribute__ ((packed));
+} GRUB_PACKED;
 typedef struct grub_packed_guid grub_packed_guid_t;
 
 #endif /* ! GRUB_TYPES_HEADER */
